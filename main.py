@@ -1,89 +1,65 @@
-import os
-import chromadb
-from dotenv import load_dotenv
-from langchain_chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
-from langchain_core.documents import Document
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import whisper
+import tempfile
+import soundfile as sf
+import streamlit as st
+from langchain_helper import get_llm_chain, ask
+from streamlit_mic_recorder import mic_recorder
 
-# ---------------- CONFIG ----------------
-load_dotenv()
-api_key = os.getenv('OPENAI_KEY')
 
-embedding_function = OpenAIEmbeddings(
-    openai_api_key=api_key,
-    model='text-embedding-3-small'
+st.title("AFRiQ T-shirts: Database Q&A")
+
+#load whisper model once(important for performance)
+@st.cache_resource
+def load_model():
+    return whisper.load_model("base")
+
+model = load_model()
+
+chain = get_llm_chain()
+
+st.write("Ask a question using voice or text")
+
+# -----------------------------
+# 🎤 MICROPHONE INPUT
+# -----------------------------
+
+audio = mic_recorder(
+    start_prompt="🎤 Click to record",
+    stop_prompt="⏹ Stop recording",
+    just_once=True
 )
 
-rc_splitter = RecursiveCharacterTextSplitter(
-    separators=["\n\n", "\n", " ", ""],
-    chunk_size=200,
-    chunk_overlap=100
-)
+question = None
 
-# ---------------- FUNCTIONS ----------------
-def document_splitter(document):
-    return rc_splitter.split_documents(document)
+if audio:
+    #save audio temporarily
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+        #st.write(tmp_file.name, audio['bytes'], audio['sample_rate'])
+        tmp_file.write(audio["bytes"])
+        tmp_path = tmp_file.name
 
-def create_collection(name, docs):
-    labeled_docs = []
+    with st.spinner("Transcribing speech..."):
+        #speech to text
+        result = model.transcribe(tmp_file.name)
+        question = result['text']
 
-    for i, doc_text in enumerate(docs):
-        labeled_docs.append(
-            Document(
-                page_content=str(doc_text),  # force string safety
-                metadata={"paperNo": f"paper{i+1}"}
-            )
-        )
-
-    return Chroma.from_documents(
-        documents=labeled_docs,
-        embedding=embedding_function,
-        persist_directory="./chroma_db",
-        collection_name=name
-    )
+    st.success(f'you said: {question}')
 
 
-#persistent
-#client = chromadb.PersistentClient(path="./chroma_db")
+# -----------------------------
+# 💬 TEXT FALLBACK INPUT
+# -----------------------------
+text_input = st.text_input("Type your question here:")
 
-client  = chromadb.EphemeralClient()
+if text_input:
+    question = text_input
 
-def delete_collections():
-    for col in client.list_collections():
-        client.delete_collection(name=col.name)
-    print("All collections deleted ")
+# -----------------------------
+# 🧠 RUN CHAIN
+# -----------------------------
 
-def list_collections():
-    print(client.list_collections())
+if question:
+    answer = ask(question, chain)
 
-
-def load_documents(paths: list[str]):
-    docs = []
-    for path in paths:
-        loader = PyPDFLoader(path)
-        document = loader.load()
-        docs_splitted = document_splitter(document)
-        docs.extend(docs_splitted)
-    return docs
-
-def add_to_collection(collection, document):
-    pass
-
-
-# ---------------- PIPELINE ----------------
-# file_paths = ["documents/airline_policy.pdf",
-#               "documents/CV-ubongudoette_AI5.pdf",
-#               "documents/term_semester_dates_herts.pdf",
-#               "documents/you_only_look_once_unified_real_time_object_detection.pdf"
-#               ]
-
-
-#file_path = ["documents/you_only_look_once_unified_real_time_object_detection.pdf"]
-#docs = load_documents(file_paths)
-
-#
-# print("Process setup completed successfully ")
-# print(list_collections())
-# #delete_collections()
+    st.header("Answer:")
+    st.write(answer)
